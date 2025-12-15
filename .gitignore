@@ -75,4 +75,3 @@ htmlcov/
 # Data files (keep CSV labels but ignore other large data files)
 data/*.csv.bak
 data/*.json.bak
-
