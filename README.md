@@ -1,23 +1,3 @@
-Below is a **complete, professional, polished `README.md`** for your GitHub repository.
-It is written at an **FYP / research-level** standard, covering:
-
-* Project description
-* Problem statement
-* Dataset description
-* System architecture
-* Model details
-* Installation
-* Training
-* Evaluation
-* Inference
-* File structure
-* Future work
-* Credits
-
-You can **copy–paste this directly into your GitHub README.md**.
-
----
-
 # 🧬 **ForensicaAI – Deepfake Video Detection Using CNN + LSTM (Spatial–Temporal Model)**
 
 ForensicaAI is a lightweight, CPU-friendly deepfake detection prototype built using a **hybrid spatial–temporal architecture**:
@@ -96,6 +76,22 @@ data/
  ├── frames/
  └── labels.csv
 ```
+
+### Celeb-DF-v2 quick start
+
+1. Place the original dataset at `Celeb-DF-v2/` (sibling to this repo) with `Celeb-real` and `Celeb-synthesis` inside.
+2. Build labels and copy videos into the project layout:
+   ```
+   python src/data_prep/prepare_celeb_df_v2.py --celeb_root Celeb-DF-v2
+   ```
+   This writes `data/labels.csv` (`video,label`) and fills `data/raw_videos/` with mp4s.
+3. Extract frames into `data/frames/<video_name>/frame_i.jpg`:
+   ```
+   python src/data_prep/extract_frames.py
+   ```
+4. Train/evaluate using the generated frames and labels.
+
+Configurable paths live in `config.yaml` (`raw_video_dir`, `frames_dir`, `labels_csv`, `num_frames`, `frame_size`).
 
 ### **labels.csv format**
 

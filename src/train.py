@@ -9,7 +9,6 @@ from src.dataset.video_dataset import build_loaders
 from src.models.cnn_feature_extractor import build_cnn
 from src.models.rnn_classifier import RNNClassifier
 
-
 # ---------------------------------------------------------
 # Load config.yaml
 # ---------------------------------------------------------
@@ -37,7 +36,6 @@ def train_one_epoch(cnn, rnn, loader, criterion, optimizer, device):
 
         # Merge batch & time to feed CNN
         seqs_reshaped = seqs.view(B * T, C, H, W)
-
         features = cnn(seqs_reshaped)               # [B*T, feature_dim]
         feature_dim = features.shape[-1]
         features = features.view(B, T, feature_dim) # [B, T, feature_dim]
@@ -51,14 +49,12 @@ def train_one_epoch(cnn, rnn, loader, criterion, optimizer, device):
         optimizer.step()
 
         total_loss += loss.item() * B
-
         preds = torch.argmax(logits, dim=1)
         correct += (preds == labels).sum().item()
         total += B
 
     avg_loss = total_loss / total
     acc = correct / total
-
     return avg_loss, acc
 
 
@@ -79,7 +75,6 @@ def validate(cnn, rnn, loader, criterion, device):
             labels = labels.to(device)
 
             B, T, C, H, W = seqs.shape
-
             seqs_reshaped = seqs.view(B * T, C, H, W)
             features = cnn(seqs_reshaped)
             feature_dim = features.shape[-1]
@@ -89,14 +84,12 @@ def validate(cnn, rnn, loader, criterion, device):
             loss = criterion(logits, labels)
 
             total_loss += loss.item() * B
-
             preds = torch.argmax(logits, dim=1)
             correct += (preds == labels).sum().item()
             total += B
 
     avg_loss = total_loss / total
     acc = correct / total
-
     return avg_loss, acc
 
 
@@ -107,8 +100,8 @@ def main():
     cfg = load_config("config.yaml")
 
     # Directories
-    FRAMES_DIR = "data/frames"
-    LABELS_CSV = "data/labels.csv"
+    FRAMES_DIR = cfg.get("frames_dir", "data/frames")
+    LABELS_CSV = cfg.get("labels_csv", "data/labels.csv")
     SAVE_DIR = "models/"
     os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -116,7 +109,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
-    # Build dataloaders
+    # Build dataloaders (train + validation split)
     train_loader, val_loader = build_loaders(
         frames_root=FRAMES_DIR,
         labels_csv=LABELS_CSV,
@@ -127,11 +120,8 @@ def main():
         cache_in_memory=False
     )
 
-    # Build CNN
-    cnn, feature_dim = build_cnn(
-        model_name="mobilenet",     # OR "simple"
-        output_dim=cfg["cnn_output_dim"]
-    )
+    # Build CNN (MobileNetV2 only)
+    cnn, feature_dim = build_cnn()  # returns MobileNetV2 feature extractor
     cnn.to(device)
 
     # Build RNN
@@ -152,7 +142,6 @@ def main():
 
     # Training loop
     best_val_acc = 0
-
     for epoch in range(cfg["epochs"]):
         print(f"\n--- Epoch {epoch+1}/{cfg['epochs']} ---")
 
@@ -179,6 +168,19 @@ def main():
 
     print("\nTraining complete.")
     print(f"Best validation accuracy: {best_val_acc:.4f}")
+    
+    # Save final model state with complete information
+    final_save_path = os.path.join(SAVE_DIR, "final_model.pth")
+    torch.save({
+        "cnn_state": cnn.state_dict(),
+        "rnn_state": rnn.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "feature_dim": feature_dim,
+        "best_val_acc": best_val_acc,
+        "epochs": cfg["epochs"],
+        "config": cfg
+    }, final_save_path)
+    print(f">>> Saved final model state to {final_save_path}")
 
 
 if __name__ == "__main__":

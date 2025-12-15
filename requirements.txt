@@ -7,3 +7,5 @@ torchvision
 tqdm
 pyyaml
 scikit-learn
+streamlit
+pillow

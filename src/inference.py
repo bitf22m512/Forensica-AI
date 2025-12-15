@@ -60,8 +60,14 @@ def predict(video_path):
     checkpoint = torch.load(MODEL_PATH, map_location=device)
     feature_dim = checkpoint["feature_dim"]
 
-    cnn, _ = build_cnn("mobilenet")
-    rnn = RNNClassifier(feature_dim=feature_dim)
+    cnn, _ = build_cnn()
+    # Use default RNN parameters (matching training config)
+    rnn = RNNClassifier(
+        feature_dim=feature_dim,
+        hidden_size=128,
+        num_layers=1,
+        bidirectional=False
+    )
 
     cnn.load_state_dict(checkpoint["cnn_state"])
     rnn.load_state_dict(checkpoint["rnn_state"])
