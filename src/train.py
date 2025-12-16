@@ -9,12 +9,38 @@ from src.dataset.video_dataset import build_loaders
 from src.models.cnn_feature_extractor import build_cnn
 from src.models.rnn_classifier import RNNClassifier
 
+
 # ---------------------------------------------------------
 # Load config.yaml
 # ---------------------------------------------------------
 def load_config(path="config.yaml"):
     with open(path, "r") as f:
         return yaml.safe_load(f)
+
+
+# ---------------------------------------------------------
+# Save checkpoint (epoch-wise)
+# ---------------------------------------------------------
+def save_checkpoint(epoch, cnn, rnn, optimizer, best_val_acc, path):
+    torch.save({
+        "epoch": epoch,
+        "cnn_state": cnn.state_dict(),
+        "rnn_state": rnn.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "best_val_acc": best_val_acc
+    }, path)
+
+
+# ---------------------------------------------------------
+# Load checkpoint (resume training)
+# ---------------------------------------------------------
+def load_checkpoint(path, cnn, rnn, optimizer, device):
+    checkpoint = torch.load(path, map_location=device)
+    cnn.load_state_dict(checkpoint["cnn_state"])
+    rnn.load_state_dict(checkpoint["rnn_state"])
+    optimizer.load_state_dict(checkpoint["optimizer_state"])
+    print(f">>> Resuming from epoch {checkpoint['epoch'] + 1}")
+    return checkpoint["epoch"] + 1, checkpoint["best_val_acc"]
 
 
 # ---------------------------------------------------------
@@ -34,14 +60,12 @@ def train_one_epoch(cnn, rnn, loader, criterion, optimizer, device):
 
         B, T, C, H, W = seqs.shape
 
-        # Merge batch & time to feed CNN
         seqs_reshaped = seqs.view(B * T, C, H, W)
-        features = cnn(seqs_reshaped)               # [B*T, feature_dim]
+        features = cnn(seqs_reshaped)
         feature_dim = features.shape[-1]
-        features = features.view(B, T, feature_dim) # [B, T, feature_dim]
+        features = features.view(B, T, feature_dim)
 
-        logits = rnn(features)   # [B, 2]
-
+        logits = rnn(features)
         loss = criterion(logits, labels)
 
         optimizer.zero_grad()
@@ -53,9 +77,7 @@ def train_one_epoch(cnn, rnn, loader, criterion, optimizer, device):
         correct += (preds == labels).sum().item()
         total += B
 
-    avg_loss = total_loss / total
-    acc = correct / total
-    return avg_loss, acc
+    return total_loss / total, correct / total
 
 
 # ---------------------------------------------------------
@@ -88,9 +110,7 @@ def validate(cnn, rnn, loader, criterion, device):
             correct += (preds == labels).sum().item()
             total += B
 
-    avg_loss = total_loss / total
-    acc = correct / total
-    return avg_loss, acc
+    return total_loss / total, correct / total
 
 
 # ---------------------------------------------------------
@@ -99,17 +119,14 @@ def validate(cnn, rnn, loader, criterion, device):
 def main():
     cfg = load_config("config.yaml")
 
-    # Directories
-    FRAMES_DIR = cfg.get("frames_dir", "data/frames")
-    LABELS_CSV = cfg.get("labels_csv", "data/labels.csv")
-    SAVE_DIR = "models/"
+    FRAMES_DIR = cfg["frames_dir"]
+    LABELS_CSV = cfg["labels_csv"]
+    SAVE_DIR = "models"
     os.makedirs(SAVE_DIR, exist_ok=True)
 
-    # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
-    # Build dataloaders (train + validation split)
     train_loader, val_loader = build_loaders(
         frames_root=FRAMES_DIR,
         labels_csv=LABELS_CSV,
@@ -120,11 +137,9 @@ def main():
         cache_in_memory=False
     )
 
-    # Build CNN (MobileNetV2 only)
-    cnn, feature_dim = build_cnn()  # returns MobileNetV2 feature extractor
+    cnn, feature_dim = build_cnn()
     cnn.to(device)
 
-    # Build RNN
     rnn = RNNClassifier(
         feature_dim=feature_dim,
         hidden_size=cfg["lstm_hidden_size"],
@@ -133,17 +148,26 @@ def main():
     )
     rnn.to(device)
 
-    # Loss & optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(
         list(cnn.parameters()) + list(rnn.parameters()),
         lr=cfg["learning_rate"]
     )
 
-    # Training loop
-    best_val_acc = 0
-    for epoch in range(cfg["epochs"]):
-        print(f"\n--- Epoch {epoch+1}/{cfg['epochs']} ---")
+    checkpoint_path = os.path.join(SAVE_DIR, "checkpoint.pth")
+    best_model_path = os.path.join(SAVE_DIR, "best_model.pth")
+    final_model_path = os.path.join(SAVE_DIR, "final_model.pth")
+
+    start_epoch = 0
+    best_val_acc = 0.0
+
+    if os.path.exists(checkpoint_path):
+        start_epoch, best_val_acc = load_checkpoint(
+            checkpoint_path, cnn, rnn, optimizer, device
+        )
+
+    for epoch in range(start_epoch, cfg["epochs"]):
+        print(f"\n--- Epoch {epoch + 1}/{cfg['epochs']} ---")
 
         train_loss, train_acc = train_one_epoch(
             cnn, rnn, train_loader, criterion, optimizer, device
@@ -152,25 +176,22 @@ def main():
             cnn, rnn, val_loader, criterion, device
         )
 
-        print(f"Train Loss: {train_loss:.4f}  |  Train Acc: {train_acc:.4f}")
-        print(f"Val Loss:   {val_loss:.4f}  |  Val Acc:   {val_acc:.4f}")
+        print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
+        print(f"Val   Loss: {val_loss:.4f} | Val   Acc: {val_acc:.4f}")
 
-        # Save best model
+        save_checkpoint(
+            epoch, cnn, rnn, optimizer, best_val_acc, checkpoint_path
+        )
+
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            save_path = os.path.join(SAVE_DIR, "best_model.pth")
             torch.save({
                 "cnn_state": cnn.state_dict(),
                 "rnn_state": rnn.state_dict(),
                 "feature_dim": feature_dim
-            }, save_path)
-            print(f">>> Saved new best model at acc={val_acc:.4f}")
+            }, best_model_path)
+            print(f">>> Best model saved (acc={val_acc:.4f})")
 
-    print("\nTraining complete.")
-    print(f"Best validation accuracy: {best_val_acc:.4f}")
-    
-    # Save final model state with complete information
-    final_save_path = os.path.join(SAVE_DIR, "final_model.pth")
     torch.save({
         "cnn_state": cnn.state_dict(),
         "rnn_state": rnn.state_dict(),
@@ -179,8 +200,10 @@ def main():
         "best_val_acc": best_val_acc,
         "epochs": cfg["epochs"],
         "config": cfg
-    }, final_save_path)
-    print(f">>> Saved final model state to {final_save_path}")
+    }, final_model_path)
+
+    print("\nTraining complete.")
+    print(f"Best validation accuracy: {best_val_acc:.4f}")
 
 
 if __name__ == "__main__":

@@ -7,17 +7,166 @@ import cv2
 import numpy as np
 from PIL import Image
 import time
+from torchvision import transforms
 
 # Import inference functions
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Import inference function
+# Import model components
 try:
-    from src.inference import predict
-except ImportError:
-    st.error("Could not import inference module. Make sure src/inference.py exists.")
+    from src.models.cnn_feature_extractor import build_cnn
+    from src.models.rnn_classifier import RNNClassifier
+except ImportError as e:
+    st.error(f"Could not import model modules: {str(e)}")
     st.stop()
+
+# Settings - Use absolute path resolution for model
+MODEL_PATH = str(Path(__file__).parent / "models" / "best_model.pth")
+FRAME_SIZE = 128
+NUM_FRAMES = 20
+MEAN = [0.485, 0.456, 0.406]
+STD = [0.229, 0.224, 0.225]
+
+transform = transforms.Compose([
+    transforms.Resize((FRAME_SIZE, FRAME_SIZE)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=MEAN, std=STD)
+])
+
+@st.cache_resource
+def load_model():
+    """Load and cache the trained model with all weights and states."""
+    try:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Check if model file exists
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError(
+                f"Model not found at {MODEL_PATH}. "
+                f"Please ensure the model file exists. Current working directory: {os.getcwd()}"
+            )
+        
+        # Load checkpoint
+        try:
+            checkpoint = torch.load(MODEL_PATH, map_location=device)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load checkpoint from {MODEL_PATH}: {str(e)}")
+        
+        # Get feature dimension from checkpoint
+        if "feature_dim" not in checkpoint:
+            raise KeyError(
+                "Checkpoint missing 'feature_dim' key. "
+                "Please ensure you're using a model trained with the current codebase."
+            )
+        
+        feature_dim = checkpoint["feature_dim"]
+        
+        # Build CNN
+        try:
+            cnn, _ = build_cnn()
+        except Exception as e:
+            raise RuntimeError(f"Failed to build CNN: {str(e)}")
+        
+        # Build RNN with same parameters as training
+        try:
+            rnn = RNNClassifier(
+                feature_dim=feature_dim,
+                hidden_size=128,
+                num_layers=1,
+                bidirectional=False
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to build RNN: {str(e)}")
+        
+        # Load state dicts
+        if "cnn_state" not in checkpoint:
+            raise KeyError("Checkpoint missing 'cnn_state' key")
+        if "rnn_state" not in checkpoint:
+            raise KeyError("Checkpoint missing 'rnn_state' key")
+        
+        try:
+            cnn.load_state_dict(checkpoint["cnn_state"])
+            rnn.load_state_dict(checkpoint["rnn_state"])
+        except Exception as e:
+            raise RuntimeError(f"Failed to load model weights: {str(e)}")
+        
+        # Move to device
+        cnn.to(device)
+        rnn.to(device)
+        
+        # Set to eval mode
+        cnn.eval()
+        rnn.eval()
+        
+        return cnn, rnn, device, checkpoint
+    
+    except Exception as e:
+        st.error(f"Error in load_model(): {str(e)}")
+        raise
+
+def extract_frames(video_path):
+    """Extract frames from video for inference."""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video: {video_path}")
+    
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    if total < NUM_FRAMES:
+        raise ValueError(f"Video too short! Need at least {NUM_FRAMES} frames, got {total}.")
+    
+    interval = max(1, total // NUM_FRAMES)
+    frames = []
+    
+    for i in range(NUM_FRAMES):
+        frame_pos = min(i * interval, total - 1)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = Image.fromarray(frame)
+        frames.append(frame)
+    
+    cap.release()
+    
+    if len(frames) < NUM_FRAMES:
+        raise ValueError(f"Could only extract {len(frames)} frames, need {NUM_FRAMES}.")
+    
+    return frames
+
+def predict_video(video_path, cnn, rnn, device):
+    """Run prediction on a video using the loaded model."""
+    # Extract frames
+    frames = extract_frames(video_path)
+    
+    # Preprocess frames
+    tensors = []
+    for f in frames:
+        tensors.append(transform(f))
+    
+    seq_tensor = torch.stack(tensors, dim=0)  # [T, C, H, W]
+    seq_tensor = seq_tensor.unsqueeze(0)      # [1, T, C, H, W]
+    
+    # Predict
+    with torch.no_grad():
+        B, T, C, H, W = seq_tensor.shape
+        seq_tensor = seq_tensor.to(device)
+        
+        reshaped = seq_tensor.view(B*T, C, H, W)
+        features = cnn(reshaped)
+        features = features.view(B, T, -1)
+        
+        logits = rnn(features)
+        probs = torch.softmax(logits, dim=1)
+    
+    pred_class = torch.argmax(probs, dim=1).item()
+    confidence = probs[0][pred_class].item()
+    
+    label_map = {0: "REAL", 1: "FAKE"}
+    
+    return label_map[pred_class], confidence
 
 # Page configuration
 st.set_page_config(
@@ -72,18 +221,24 @@ with st.sidebar:
     - Resolution: 128x128
     """)
     
-    # Check if model exists
-    model_path = "models/best_model.pth"
-    if os.path.exists(model_path):
+    # Load model (cached)
+    try:
+        cnn, rnn, device, checkpoint = load_model()
         st.success("✅ Model loaded successfully")
-        try:
-            checkpoint = torch.load(model_path, map_location="cpu")
-            if "best_val_acc" in checkpoint:
-                st.metric("Best Validation Accuracy", f"{checkpoint['best_val_acc']:.2%}")
-        except:
-            pass
-    else:
-        st.error("❌ Model not found. Please train the model first.")
+        if "best_val_acc" in checkpoint:
+            st.metric("Best Validation Accuracy", f"{checkpoint['best_val_acc']:.2%}")
+        else:
+            st.info("Model weights loaded (no accuracy metric in checkpoint)")
+        st.metric("Device", str(device))
+        if "feature_dim" in checkpoint:
+            st.metric("Feature Dimension", checkpoint["feature_dim"])
+    except FileNotFoundError as e:
+        st.error(f"❌ {str(e)}")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Error loading model: {str(e)}")
+        st.exception(e)
+        st.stop()
 
 # Main content
 col1, col2 = st.columns([1, 1])
@@ -126,16 +281,21 @@ with col2:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     
-                    # Step 1: Load model and extract frames
-                    status_text.text("Step 1/2: Extracting frames from video...")
-                    progress_bar.progress(30)
+                    # Step 1: Extract frames
+                    status_text.text("Step 1/3: Extracting frames from video...")
+                    progress_bar.progress(20)
                     
-                    # Step 2: Run prediction
-                    status_text.text("Step 2/2: Analyzing with deepfake detection model...")
-                    progress_bar.progress(60)
+                    # Step 2: Load model (cached, so should be fast)
+                    status_text.text("Step 2/3: Loading model...")
+                    progress_bar.progress(40)
+                    cnn, rnn, device, checkpoint = load_model()
                     
-                    # Run prediction (this handles frame extraction internally)
-                    prediction, confidence = predict(tmp_video_path)
+                    # Step 3: Run prediction
+                    status_text.text("Step 3/3: Analyzing with deepfake detection model...")
+                    progress_bar.progress(70)
+                    
+                    # Run prediction
+                    prediction, confidence = predict_video(tmp_video_path, cnn, rnn, device)
                     
                     progress_bar.progress(100)
                     status_text.text("Analysis complete!")
