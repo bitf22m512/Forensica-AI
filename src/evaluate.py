@@ -39,7 +39,7 @@ def evaluate_model():
     checkpoint = torch.load(MODEL_PATH, map_location=device)
     feature_dim = checkpoint["feature_dim"]
 
-    cnn, _ = build_cnn("mobilenet")   # use same one used in training
+    cnn, _ = build_cnn(use_custom=False)   # use same one used in training
     rnn = RNNClassifier(feature_dim=feature_dim)
 
     cnn.load_state_dict(checkpoint["cnn_state"])

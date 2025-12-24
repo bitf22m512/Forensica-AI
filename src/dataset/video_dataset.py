@@ -28,7 +28,6 @@ frame_transform = transforms.Compose([
     transforms.Normalize(mean=MEAN, std=STD)
 ])
 
-
 class VideoSequenceDataset(Dataset):
     """
     PyTorch Dataset returning a fixed-length sequence of frames for each video.
