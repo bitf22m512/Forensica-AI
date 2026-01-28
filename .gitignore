@@ -2,6 +2,8 @@
 data/frames/
 data/raw_videos/
 Celeb-DF-v2/
+data/*.csv
+
 
 # Model checkpoints and weights - Usually large files
 models/*.pth

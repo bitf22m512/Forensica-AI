@@ -210,11 +210,41 @@ python train.py
 python evaluate.py
 ```
 
-## **D. Inference on a Single Video**
+## **D. Run Streamlit App (Video Upload & Detection)**
+
+The easiest way to use the trained model is through the Streamlit web interface:
+
+**Windows:**
+```bash
+run_app.bat
+```
+
+**Linux/Mac:**
+```bash
+chmod +x run_app.sh
+./run_app.sh
+```
+
+**Or manually:**
+```bash
+streamlit run app.py
+```
+
+The app will open in your browser at `http://localhost:8501`. You can:
+- Upload video files (MP4, AVI, MOV, MKV)
+- Get real-time predictions (REAL/FAKE)
+- View confidence scores and detailed reports
+- Download analysis reports
+
+**Note:** Make sure `models/best_model.pth` exists before running the app.
+
+## **E. Command Line Inference (Alternative)**
 
 ```python
-python infer.py --video path/to/video.mp4
+python src/inference.py
 ```
+
+Then enter the video path when prompted.
 
 Output example:
 
@@ -239,15 +269,28 @@ ForensicaAI/
 │   └── best_model.pth
 │
 ├── notebooks/
-│   └── ForensicaAI_OptionA_Prototype.ipynb
+│   └── walkthrough.ipynb
 │
 ├── src/
-│   ├── dataset.py
-│   ├── model.py
+│   ├── dataset/
+│   │   └── video_dataset.py
+│   ├── models/
+│   │   ├── cnn_feature_extractor.py
+│   │   └── rnn_classifier.py
+│   ├── data_prep/
+│   │   ├── extract_frames.py
+│   │   └── prepare_celeb_df_v2.py
 │   ├── train.py
 │   ├── inference.py
-│   └── utils.py
+│   └── evaluate.py
 │
+├── models/
+│   └── best_model.pth
+│
+├── app.py (Streamlit frontend)
+├── run_app.bat (Windows launcher)
+├── run_app.sh (Linux/Mac launcher)
+├── config.yaml
 ├── README.md
 └── requirements.txt
 ```
@@ -286,7 +329,6 @@ Several enhancements are planned:
 * Add Vision Transformer (ViT) for global attention
 * Add MobileNet/EfficientNet backbone for improved spatial encoding
 * Improve temporal modeling using GRU or Temporal Convolution Networks
-* Add GUI/Web dashboard for user-friendly inference
 * Deploy model as lightweight REST API (FastAPI)
 * Expand dataset to 2000+ videos for higher generalization
 

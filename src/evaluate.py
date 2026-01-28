@@ -1,92 +1,72 @@
+# ============================================
+# EVALUATION (Kaggle-ready)
+# ============================================
 import torch
-import torch.nn as nn
 from sklearn.metrics import confusion_matrix, classification_report
-import numpy as np
 
-from src.dataset.video_dataset import build_loaders
-from src.models.cnn_feature_extractor import build_cnn
-from src.models.rnn_classifier import RNNClassifier
+MODEL_PATH = os.path.join(CONFIG["save_dir"], "best_model.pth")
 
+if os.path.exists(MODEL_PATH):
+    print("📊 Evaluating model...")
 
-MODEL_PATH = "models/best_model.pth"
-FRAMES_DIR = "data/frames"
-LABELS_CSV = "data/labels.csv"
-
-
-def evaluate_model():
-
-    # ------------------------
-    # Device
-    # ------------------------
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using:", device)
-
-    # ------------------------
-    # Load data (use only val_loader)
-    # ------------------------
-    _, val_loader = build_loaders(
-        frames_root=FRAMES_DIR,
-        labels_csv=LABELS_CSV,
-        batch_size=4,
-        train_split=0.8,
-        num_workers=2,
-        num_frames=20
-    )
-
-    # ------------------------
-    # Load model
-    # ------------------------
-    checkpoint = torch.load(MODEL_PATH, map_location=device)
+    # Load checkpoint
+    checkpoint = torch.load(MODEL_PATH, map_location=CONFIG["device"])
     feature_dim = checkpoint["feature_dim"]
 
-    cnn, _ = build_cnn(use_custom=False)   # use same one used in training
-    rnn = RNNClassifier(feature_dim=feature_dim)
+    # Rebuild models
+    cnn, mctnn, cnn_output_dim = build_cnn_mctnn(
+        cnn_freeze=CONFIG["cnn_freeze_backbone"],
+        mctnn_input_dim=CONFIG["mctnn_hidden_dim"],
+        use_mctnn=True
+    )
+    rnn = RNNClassifier(
+        feature_dim=cnn_output_dim,
+        hidden_size=CONFIG["rnn_hidden_size"],
+        num_layers=CONFIG["rnn_num_layers"],
+        bidirectional=False
+    )
 
+    # Load weights
     cnn.load_state_dict(checkpoint["cnn_state"])
     rnn.load_state_dict(checkpoint["rnn_state"])
+    if mctnn:
+        mctnn.load_state_dict(checkpoint["mctnn_state"])
 
-    cnn.to(device)
-    rnn.to(device)
+    cnn.to(CONFIG["device"]).eval()
+    rnn.to(CONFIG["device"]).eval()
+    if mctnn:
+        mctnn.to(CONFIG["device"]).eval()
 
-    cnn.eval()
-    rnn.eval()
-
-    # ------------------------
-    # Evaluation
-    # ------------------------
-    all_labels = []
-    all_preds = []
+    all_labels, all_preds = [], []
 
     with torch.no_grad():
-        for seqs, labels in val_loader:
-            seqs = seqs.to(device)
-            labels = labels.to(device)
+        for seqs, labels in tqdm(val_loader, desc="Evaluating", ncols=100):
+            seqs = seqs.to(CONFIG["device"])
+            labels = labels.to(CONFIG["device"])
 
             B, T, C, H, W = seqs.shape
-            seqs_reshaped = seqs.view(B*T, C, H, W)
+            seqs_reshaped = seqs.view(B * T, C, H, W)
 
             features = cnn(seqs_reshaped)
             features = features.view(B, T, -1)
 
-            logits = rnn(features)
+            rnn_out = rnn(features)
+            rnn_seq = rnn_out.unsqueeze(1).repeat(1, T, 1)
+
+            logits = mctnn(rnn_seq)
             preds = torch.argmax(logits, dim=1)
 
             all_labels.extend(labels.cpu().numpy())
             all_preds.extend(preds.cpu().numpy())
 
-    # ------------------------
-    # Metrics
-    # ------------------------
-    print("\nClassification Report:")
-    print(classification_report(all_labels, all_preds, target_names=["real", "fake"]))
+    print("\n📈 Classification Report:")
+    print(classification_report(all_labels, all_preds, target_names=["REAL", "FAKE"]))
 
-    print("\nConfusion Matrix:")
+    print("\n📊 Confusion Matrix:")
     print(confusion_matrix(all_labels, all_preds))
 
-    # Accuracy
-    acc = np.mean(np.array(all_labels) == np.array(all_preds))
-    print(f"\nFinal Validation Accuracy: {acc:.4f}")
+    acc = (torch.tensor(all_labels) == torch.tensor(all_preds)).float().mean().item()
+    print(f"\n✅ Final Validation Accuracy: {acc:.4f}")
 
-
-if __name__ == "__main__":
-    evaluate_model()
+else:
+    print("❌ Model not found. Please train the model first.")
